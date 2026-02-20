@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>Activity for {{ agent.hostname }}</h2>
+    <p>Last Seen: {{ agent.last_seen }}</p>
+    <p>IP Address: {{ agent.ip_address }}</p>
+
+    <form action="/agent/{{ agent.id }}/clear_logs" method="post"
+        onsubmit="return confirm('Are you sure? This will delete all activity logs for this agent.');"
+        style="margin-top: 1rem;">
+        <button type="submit"
+            style="background-color: var(--danger); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">Clear
+            Logs</button>
+    </form>
+</div>
+
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h3 style="margin: 0;">Activity Log</h3>
+        <form action="/agent/{{ agent.id }}" method="get" style="display: flex; gap: 0.5rem;">
+            <input type="text" name="q" value="{{ q }}" placeholder="Search logs..."
+                style="padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--card-bg); color: var(--text-color);">
+            <button type="submit"
+                style="background-color: var(--accent); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">Search</button>
+        </form>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Content</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.timestamp.strftime('%H:%M:%S') }}</td>
+                <td>{{ log.log_type }}</td>
+                <td>
+                    {% if log.log_type == 'window' %}
+                    {{ log.content.get('process_name') }} - {{ log.content.get('window_title') }}
+                    {% elif log.log_type == 'idle' %}
+                    Idle for {{ log.content.get('duration')|round(1) }}s
+                    {% elif log.log_type == 'keystrokes' %}
+                    Key count: {{ log.content.get('keys')|length }}
+                    {% else %}
+                    {{ log.content }}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

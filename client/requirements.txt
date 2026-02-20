@@ -1,0 +1,7 @@
+requests
+mss
+pynput
+pywin32
+cryptography
+Pillow
+psutil

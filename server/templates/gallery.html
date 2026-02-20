@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h2 style="margin: 0;">Screenshot Gallery</h2>
+        <form action="/gallery" method="get" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <input type="text" name="search_hostname" value="{{ search_hostname }}" placeholder="Search hostname..."
+                style="padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--card-bg); color: var(--text-color);">
+            <input type="date" name="search_date" value="{{ search_date }}"
+                style="padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--card-bg); color: var(--text-color);">
+            <button type="submit"
+                style="background-color: var(--accent); color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;">Search</button>
+        </form>
+    </div>
+    <div class="grid">
+        {% for shot in screenshots %}
+        <div style="background: rgba(0,0,0,0.2); padding: 10px; border-radius: 8px;">
+            <a href="{% if 'http' in shot.file_path %}{{ shot.file_path }}{% else %}/{{ shot.file_path }}{% endif %}"
+                target="_blank">
+                <img src="{% if 'http' in shot.file_path %}{{ shot.file_path }}{% else %}/{{ shot.file_path }}{% endif %}"
+                    class="screenshot-thumb" alt="Screenshot">
+            </a>
+            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 5px;">
+                {{ shot.agent.hostname }}<br>
+                {{ shot.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+            </p>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

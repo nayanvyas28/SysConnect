@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+sqlalchemy
+aiosqlite
+python-multipart
+jinja2
+supabase
+python-dotenv
+asyncpg
+psycopg2-binary
