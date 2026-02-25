@@ -44,7 +44,17 @@
                     {% elif log.log_type == 'idle' %}
                     Idle for {{ log.content.get('duration')|round(1) }}s
                     {% elif log.log_type == 'keystrokes' %}
-                    Key count: {{ log.content.get('keys')|length }}
+                    Keys:
+                    <span
+                        style="font-family: monospace; background: var(--bg-color); padding: 2px 4px; border-radius: 3px;">
+                        {% for key in log.content.get('keys') %}
+                        {% if key.get('key').startswith('Key.') %}
+                        [{{ key.get('key').replace('Key.', '') }}]
+                        {% else %}
+                        {{ key.get('key') }}
+                        {% endif %}
+                        {% endfor %}
+                    </span>
                     {% else %}
                     {{ log.content }}
                     {% endif %}

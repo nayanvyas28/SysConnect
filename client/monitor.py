@@ -45,8 +45,13 @@ class MonitorAgent:
                 self.storage.save_screenshot(path, time.time())
             except Exception as e:
                 print(f"Screenshot error: {e}")
-            # Random wait between 20 and 25 minutes (1200 to 1500 seconds)
-            time.sleep(random.randint(1200, 1500))
+            
+            config_data = self.uploader.get_remote_config()
+            interval_mins = config_data.get("screenshot_interval_minutes", 20) if config_data else 20
+            
+            interval_secs = interval_mins * 60
+            jitter = int(interval_secs * 0.1)
+            time.sleep(interval_secs + random.randint(-jitter, jitter))
             
     def _window_loop(self):
         last_app_data = None
