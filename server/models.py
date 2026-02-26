@@ -14,6 +14,7 @@ class GlobalConfig(Base):
     __tablename__ = "global_config"
     id = Column(Integer, primary_key=True, index=True)
     retention_days = Column(Integer, default=30) # Default to 30 days
+    screenshot_interval = Column(Integer, default=20) # Default screenshot interval in mins
 
 class Agent(Base):
     __tablename__ = "agents"

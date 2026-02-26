@@ -26,7 +26,15 @@ class Uploader:
             print(f"Registration error: {e}")
             return False
 
-        
+    def get_remote_config(self):
+        try:
+            url = f"{self.base_url}/agent/config"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            pass
+        return None
     def upload_logs(self):
         logs = self.storage.get_pending_logs()
         if not logs:

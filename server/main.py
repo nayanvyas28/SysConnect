@@ -7,10 +7,10 @@ import models, schemas, database, auth
 import shutil
 import os
 import uuid
-import datetime
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 app = FastAPI()
 
@@ -63,15 +63,25 @@ async def register_agent(agent: schemas.AgentCreate, db: AsyncSession = Depends(
     await db.commit()
     return agent
 
+@app.get("/agent/config")
+async def get_agent_config(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.GlobalConfig).limit(1))
+    config = result.scalars().first()
+    interval = config.screenshot_interval if config else 20
+    return {"screenshot_interval_minutes": interval}
+
 @app.get("/config/retention")
 async def get_retention_config(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(models.GlobalConfig).limit(1))
     config = result.scalars().first()
     if not config:
-        config = models.GlobalConfig(retention_days=30)
+        config = models.GlobalConfig(retention_days=30, screenshot_interval=20)
         db.add(config)
         await db.commit()
-    return {"retention_days": config.retention_days}
+    return {
+        "retention_days": config.retention_days,
+        "screenshot_interval": config.screenshot_interval
+    }
 
 async def run_cleanup_task():
     # Because this is a background task, we need our own DB session
@@ -80,7 +90,7 @@ async def run_cleanup_task():
         config = result.scalars().first()
         days = config.retention_days if config else 30
         
-        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         
         # 1. Delete old ActivityLogs
         from sqlalchemy import delete
@@ -100,12 +110,6 @@ async def run_cleanup_task():
                         paths_to_delete.append(suffix)
                     except:
                         pass
-                else:
-                    if os.path.exists(shot.file_path):
-                        try:
-                            os.remove(shot.file_path)
-                        except:
-                            pass
             
             if paths_to_delete and supabase:
                 try:
@@ -121,25 +125,55 @@ async def run_cleanup_task():
 async def update_retention_config(
     background_tasks: BackgroundTasks, 
     days: int = Form(...), 
+    screenshot_interval: int = Form(...),
     db: AsyncSession = Depends(get_db)
 ):
     if days < 1 or days > 90:
         raise HTTPException(status_code=400, detail="Retention days must be between 1 and 90")
+    if screenshot_interval < 1:
+        raise HTTPException(status_code=400, detail="Screenshot interval must be greater than 0")
         
     result = await db.execute(select(models.GlobalConfig).limit(1))
     config = result.scalars().first()
     
     if not config:
-        config = models.GlobalConfig(retention_days=days)
+        config = models.GlobalConfig(retention_days=days, screenshot_interval=screenshot_interval)
         db.add(config)
     else:
         config.retention_days = days
+        config.screenshot_interval = screenshot_interval
         
     await db.commit()
     
     # Trigger cleanup immediately when config is changed
     background_tasks.add_task(run_cleanup_task)
     
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+@app.post("/config/supabase")
+async def update_supabase_config(
+    db_url: str = Form(""), 
+    supa_url: str = Form(""),
+    supa_key: str = Form("")
+):
+    env_content = f"DATABASE_URL={db_url}\nSUPABASE_URL={supa_url}\nSUPABASE_KEY={supa_key}\n"
+    with open(".env", "w") as f:
+        f.write(env_content)
+        
+    # Reload environment dynamically for storage, but SQLAlchemy engine requires restart
+    os.environ["SUPABASE_URL"] = supa_url
+    os.environ["SUPABASE_KEY"] = supa_key
+    
+    global supabase
+    if supa_url and supa_key:
+        try:
+            supabase = create_client(supa_url, supa_key)
+        except:
+            supabase = None
+    else:
+        supabase = None
+        
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/dashboard", status_code=303)
 
@@ -187,33 +221,28 @@ async def upload_screenshot(
     agent.last_seen = func.now()
     
     # Save file
-    now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     sanitized_hostname = hostname.replace(" ", "_").replace("/", "_").replace("\\", "_")
-    filename = f"{sanitized_hostname}_{now_str}.png"
+    filename = f"{sanitized_hostname}_{now_str}.jpg"
     storage_path = f"{sanitized_hostname}/{filename}"
-    
-    file_path = f"uploads/screenshots/{filename}"
-    upload_dir = "uploads/screenshots"
-    os.makedirs(upload_dir, exist_ok=True)
     
     file_bytes = await file.read()
     
-    if supabase:
-        try:
-            supabase.storage.from_("sysconnect-images").upload(
-                path=storage_path,
-                file=file_bytes,
-                file_options={"content-type": "image/png"}
-            )
-            public_url = supabase.storage.from_("sysconnect-images").get_public_url(storage_path)
-            file_path = public_url
-        except Exception as e:
-            print(f"Supabase upload error: {e}")
-            with open(file_path, "wb") as buffer:
-                buffer.write(file_bytes)
-    else:
-        with open(file_path, "wb") as buffer:
-            buffer.write(file_bytes)
+    # Supabase strictly enforced
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase not configured. Local storage is disabled.")
+        
+    try:
+        supabase.storage.from_("sysconnect-images").upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": "image/jpeg"}
+        )
+        public_url = supabase.storage.from_("sysconnect-images").get_public_url(storage_path)
+        file_path = public_url
+    except Exception as e:
+        print(f"Supabase upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Supabase upload failed: {str(e)}")
         
     db_screenshot = models.Screenshot(
         agent_id=agent.id,
@@ -247,13 +276,23 @@ async def dashboard(request: Request, q: Optional[str] = None, db: AsyncSession 
     config_result = await db.execute(select(models.GlobalConfig).limit(1))
     config = config_result.scalars().first()
     retention_days = config.retention_days if config else 30
+    screenshot_interval = config.screenshot_interval if config else 20
+    
+    # Load env vars to pre-fill
+    import os
+    from dotenv import dotenv_values
+    env_dict = dotenv_values(".env")
     
     return templates.TemplateResponse("dashboard.html", {
         "request": request, 
         "agents": agents,
-        "now": datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
+        "now": datetime.now(timezone.utc).replace(tzinfo=None),
         "q": q or "",
-        "retention_days": retention_days
+        "retention_days": retention_days,
+        "screenshot_interval": screenshot_interval,
+        "env_db_url": env_dict.get("DATABASE_URL", ""),
+        "env_supa_url": env_dict.get("SUPABASE_URL", ""),
+        "env_supa_key": env_dict.get("SUPABASE_KEY", "")
     })
 
 @app.get("/gallery")
@@ -266,20 +305,91 @@ async def gallery(request: Request, search_hostname: Optional[str] = None, searc
     if search_date:
         from sqlalchemy import cast, Date
         try:
-            date_obj = datetime.datetime.strptime(search_date, "%Y-%m-%d").date()
+            date_obj = datetime.strptime(search_date, "%Y-%m-%d").date()
             query = query.filter(cast(models.Screenshot.timestamp, Date) == date_obj)
         except ValueError:
             pass # Invalid date format, ignore
             
-    query = query.order_by(models.Screenshot.timestamp.desc()).limit(50)
+    query = query.order_by(models.Screenshot.timestamp.desc()).limit(150)
     result = await db.execute(query)
-    screenshots = result.scalars().all()
+    all_screenshots = result.scalars().all()
+    
+    # Filter out missing local files so empty blocks don't show in UI
+    import os
+    valid_screenshots = []
+    for shot in all_screenshots:
+        if "http" in shot.file_path:
+            valid_screenshots.append(shot)
+        else:
+            # Check if local file exists
+            if os.path.exists(shot.file_path):
+                valid_screenshots.append(shot)
+                
+    # Limit final results
+    valid_screenshots = valid_screenshots[:50]
+                
     return templates.TemplateResponse("gallery.html", {
         "request": request, 
-        "screenshots": screenshots,
+        "screenshots": valid_screenshots,
         "search_hostname": search_hostname or "",
         "search_date": search_date or ""
     })
+
+@app.post("/gallery/delete/{shot_id}")
+async def delete_screenshot(shot_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.Screenshot).where(models.Screenshot.id == shot_id))
+    shot = result.scalars().first()
+    if not shot:
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+        
+    # Delete file
+    if "supabase" in shot.file_path and supabase:
+        try:
+            suffix = shot.file_path.split("sysconnect-images/")[-1].split("?")[0]
+            supabase.storage.from_("sysconnect-images").remove([suffix])
+        except Exception as e:
+            print(f"Failed to delete screenshot from Supabase: {e}")
+                
+    # Delete DB record
+    from sqlalchemy import delete
+    await db.execute(delete(models.Screenshot).where(models.Screenshot.id == shot_id))
+    await db.commit()
+    
+    # Redirect back to gallery
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/gallery", status_code=303)
+
+@app.post("/gallery/delete_multiple")
+async def delete_multiple_screenshots(
+    request: Request,
+    shot_ids: List[int] = Form(default=[]),
+    db: AsyncSession = Depends(get_db)
+):
+    if not shot_ids:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/gallery", status_code=303)
+        
+    result = await db.execute(select(models.Screenshot).where(models.Screenshot.id.in_(shot_ids)))
+    shots = result.scalars().all()
+    
+    for shot in shots:
+        # Delete file
+        if "supabase" in shot.file_path and supabase:
+            try:
+                suffix = shot.file_path.split("sysconnect-images/")[-1].split("?")[0]
+                supabase.storage.from_("sysconnect-images").remove([suffix])
+            except Exception as e:
+                print(f"Failed to delete screenshot from Supabase: {e}")
+                    
+    # Delete DB records
+    if shot_ids:
+        from sqlalchemy import delete
+        await db.execute(delete(models.Screenshot).where(models.Screenshot.id.in_(shot_ids)))
+        await db.commit()
+    
+    # Redirect back to gallery
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/gallery", status_code=303)
 
 @app.post("/agent/{agent_id}/clear_logs")
 async def clear_logs(agent_id: int, request: Request, db: AsyncSession = Depends(get_db)):
@@ -324,4 +434,13 @@ async def agent_detail(agent_id: int, request: Request, q: Optional[str] = None,
         "logs": logs,
         "q": q or ""
     })
+
+@app.get("/debug/supabase")
+async def debug_supabase():
+    global supabase
+    return {
+        "supabase_is_not_none": supabase is not None,
+        "env_url": os.environ.get("SUPABASE_URL"),
+        "key_start": os.environ.get("SUPABASE_KEY", "")[:10] if os.environ.get("SUPABASE_KEY") else None
+    }
 
